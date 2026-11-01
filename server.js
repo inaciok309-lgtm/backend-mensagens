@@ -17,6 +17,7 @@ const app = express();
 app.use(cors());
 app.use(express.json({ limit: '1mb' }));
 
+const allowed = (chat, u) => !chat.includes('|') || chat.split('|').includes(u);
 const okName = n => /^[a-z0-9_.]{3,20}$/.test(n || '');
 const token = name => jwt.sign({ name }, SECRET, { expiresIn: '30d' });
 
@@ -85,6 +86,7 @@ app.get('/users/:name', auth, (req, res) => {
 });
 
 app.get('/messages/:chat', auth, (req, res) => {
+  if (!allowed(req.params.chat, req.user)) return res.status(403).json({ erro: 'Sem acesso' });
   res.json(db.prepare('SELECT user,text,ts FROM messages WHERE chat=? ORDER BY id DESC LIMIT 200').all(req.params.chat).reverse());
 });
 
@@ -97,15 +99,20 @@ io.use((socket, next) => {
 });
 
 io.on('connection', socket => {
-  socket.on('entrar', chat => { if (typeof chat === 'string') socket.join(chat); });
+  socket.join('u:' + socket.user);
+  socket.on('entrar', chat => { if (typeof chat === 'string' && allowed(chat, socket.user)) socket.join(chat); });
   socket.on('msg', ({ chat, text }) => {
     if (typeof chat !== 'string' || typeof text !== 'string') return;
+    if (!allowed(chat, socket.user)) return;
     text = text.trim().slice(0, 2000);
     if (!text) return;
     const ts = Date.now();
     db.prepare('INSERT INTO messages(chat,user,text,ts) VALUES(?,?,?,?)').run(chat, socket.user, text, ts);
-    io.to(chat).emit('msg', { chat, user: socket.user, text, ts });
+    let alvo = io.to(chat);
+    if (chat.includes('|')) chat.split('|').forEach(n => { alvo = alvo.to('u:' + n); });
+    alvo.emit('msg', { chat, user: socket.user, text, ts });
   });
 });
 
 server.listen(process.env.PORT || 3000, () => console.log('Servidor rodando'));
+
